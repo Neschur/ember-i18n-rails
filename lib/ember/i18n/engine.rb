@@ -1,8 +1,6 @@
 module Ember
   module I18n
     class Engine < ::Rails::Engine
-      require "ember/i18n/rake"
-
       I18N_TRANSLATIONS_ASSET = "i18n/translations"
 
       initializer "ember-i18n-rails.asset_dependencies", :after => "sprockets.environment",
