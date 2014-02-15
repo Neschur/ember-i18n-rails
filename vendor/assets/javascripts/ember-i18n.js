@@ -1,3 +1,5 @@
+//= require cldr-1.0.0
+
 (function(window) {
   var I18n, assert, findTemplate, get, set, isBinding, lookupKey, pluralForm,
       keyExists, runAfterRender;
