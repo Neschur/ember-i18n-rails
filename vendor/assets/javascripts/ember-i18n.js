@@ -1,6 +1,6 @@
 (function(window) {
   var I18n, assert, findTemplate, get, set, isBinding, lookupKey, pluralForm,
-      keyExists;
+      keyExists, runAfterRender;
 
   get = Ember.Handlebars.get || Ember.Handlebars.getPath || Ember.getPath;
   set = Ember.set;
@@ -53,6 +53,19 @@
     return translation != null && !translation._isMissing;
   };
 
+  runAfterRender = (function() {
+    if (Em.run.queues.indexOf('afterRender') === -1) {
+      // Ember 0.9 doesn't have an afterRender queue.
+      return function runAfterRender(callback) {
+        return Em.run.once(callback);
+      };
+    }
+
+    return function runAfterRender(callback) {
+      return Em.run.scheduleOnce('afterRender', callback);
+    };
+  }());
+
   function eachTranslatedAttribute(object, fn) {
     var isTranslatedAttribute = /(.+)Translation$/,
         isTranslatedAttributeMatch;
@@ -69,6 +82,13 @@
     compile: Handlebars.compile,
 
     translations: {},
+
+    // Ember.I18n.eachTranslatedAttribute(object, callback)
+    //
+    // Iterate over the keys in `object`; for each property that ends in "Translation",
+    // call `callback` with the property name (minus the "Translation" suffix) and the
+    // translation whose key is the property's value.
+    eachTranslatedAttribute: eachTranslatedAttribute,
 
     template: function(key, count) {
       var interpolatedKey, result, suffix;
@@ -93,8 +113,12 @@
       init: function() {
         var result = this._super.apply(this, arguments);
         eachTranslatedAttribute(this, function(attribute, translation) {
+          this.addObserver(attribute + 'Translation', this, function(){
+            set(this, attribute, I18n.t(this.get(attribute + 'Translation')));
+          });
           set(this, attribute, translation);
         });
+
         return result;
       }
     }),
@@ -160,7 +184,7 @@
         };
 
         invoker = function() {
-          return Em.run.once(observer);
+          return runAfterRender(observer);
         };
 
         return Em.addObserver(root, normalizedPath, invoker);
@@ -171,7 +195,7 @@
     return new Handlebars.SafeString(result);
   });
 
-  Handlebars.registerHelper('translateAttr', function(options) {
+  var attrHelperFunction = function(options) {
     var attrs, result;
     attrs = options.hash;
     result = [];
@@ -183,6 +207,9 @@
     });
 
     return new Handlebars.SafeString(result.join(' '));
-  });
+  };
+
+  Handlebars.registerHelper('translateAttr', attrHelperFunction);
+  Handlebars.registerHelper('ta', attrHelperFunction);
 
 }).call(undefined, this);
