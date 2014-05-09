@@ -17,7 +17,7 @@ module Ember
     end
 
     def has_asset_pipeline?
-      ::Rails.configuration.respond_to?(:assets) && ::Rails.configuration.assets.enabled
+      ::Rails.configuration.respond_to?(:assets) && (::Rails.configuration.assets.enabled || ::Rails.configuration.assets[:compile])
     end
 
     def config_file
