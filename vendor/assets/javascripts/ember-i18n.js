@@ -1,18 +1,19 @@
-//= require cldr-1.0.0
-
 (function(window) {
   var I18n, assert, findTemplate, get, set, isBinding, lookupKey, pluralForm,
-      keyExists, runAfterRender, compileTemplate;
+      PlainHandlebars, EmHandlebars, keyExists;
 
-  get = Ember.Handlebars.get || Ember.Handlebars.getPath || Ember.getPath;
+  PlainHandlebars = window.Handlebars;
+  EmHandlebars = Ember.Handlebars;
+  get = EmHandlebars.get;
   set = Ember.set;
+  assert = Ember.assert;
 
   function warn(msg) { Ember.Logger.warn(msg); }
 
   if (typeof CLDR !== "undefined" && CLDR !== null) pluralForm = CLDR.pluralForm;
 
   if (pluralForm == null) {
-    warn("CLDR.pluralForm not found. Em.I18n will not support count-based inflection.");
+    warn("CLDR.pluralForm not found. Ember.I18n will not support count-based inflection.");
   }
 
   lookupKey = function(key, hash) {
@@ -28,18 +29,15 @@
     }
   };
 
-  assert = Ember.assert != null ? Ember.assert : window.ember_assert;
-
   findTemplate = function(key, setOnMissing) {
     assert("You must provide a translation key string, not %@".fmt(key), typeof key === 'string');
     var result = lookupKey(key, I18n.translations);
 
     if (setOnMissing) {
       if (result == null) {
-        result = I18n.translations[key] = function() { return "Missing translation: " + key; };
+        result = I18n.translations[key] = function() { return I18n.missingMessage(key); };
         result._isMissing = true;
-        warn("Missing translation: " + key);
-        I18n[(typeof I18n.trigger === 'function' ? 'trigger' : 'fire')]('missing', key); //Support 0.9 style .fire
+        I18n.trigger('missing', key);
       }
     }
 
@@ -55,19 +53,6 @@
     return translation != null && !translation._isMissing;
   };
 
-  runAfterRender = (function() {
-    if (Em.run.queues.indexOf('afterRender') === -1) {
-      // Ember 0.9 doesn't have an afterRender queue.
-      return function runAfterRender(callback) {
-        return Em.run.once(callback);
-      };
-    }
-
-    return function runAfterRender(callback) {
-      return Em.run.scheduleOnce('afterRender', callback);
-    };
-  }());
-
   function eachTranslatedAttribute(object, fn) {
     var isTranslatedAttribute = /(.+)Translation$/,
         isTranslatedAttributeMatch;
@@ -80,17 +65,43 @@
     }
   }
 
-  compileTemplate = (function() {
-    if (typeof Handlebars.compile === 'function') {
-      return function compileWithHandlebars(template) {
-        return Handlebars.compile(template);
-      };
-    } else {
-      return function cannotCompileTemplate(template) {
-        error('The default Ember.I18n.compile function requires the full Handlebars. Either include the full Handlebars or override Ember.I18n.compile.');
+  var compileImplementation;
+
+  function compileTemplate(template) {
+    if (compileImplementation === undefined) {
+      compileImplementation = selectCompileImplementation();
+    }
+
+    return compileImplementation(template);
+  }
+
+  function selectCompileImplementation() {
+    var flag = Ember.ENV.I18N_COMPILE_WITHOUT_HANDLEBARS;
+
+    if (flag === true) {
+      return function compileWithoutHandlebars(template) {
+        return function (data) {
+          return template.replace(/\{\{(.*?)\}\}/g, function(i, match) {
+            return data[match];
+          });
+        };
       };
     }
-  }());
+
+    if (flag === undefined) {
+      warn("Ember.I18n will no longer include Handlebars compilation by default in the future; instead, it will supply its own default compiler. Set Ember.ENV.I18N_COMPILE_WITHOUT_HANDLEBARS to true to opt-in now.");
+    }
+
+    if (typeof PlainHandlebars.compile === 'function') {
+      return function compileWithHandlebars(template) {
+        return PlainHandlebars.compile(template);
+      };
+    } else {
+      return function cannotCompileTemplate() {
+        throw new Ember.Error('The default Ember.I18n.compile function requires the full Handlebars. Either include the full Handlebars or override Ember.I18n.compile.');
+      };
+    }
+  }
 
   I18n = Ember.Evented.apply({
     compile: compileTemplate,
@@ -123,7 +134,11 @@
 
     exists: keyExists,
 
-    TranslateableProperties: Em.Mixin.create({
+    missingMessage: function(key) {
+      return "Missing translation: " + key; 
+    },
+
+    TranslateableProperties: Ember.Mixin.create({
       init: function() {
         var result = this._super.apply(this, arguments);
         eachTranslatedAttribute(this, function(attribute, translation) {
@@ -137,7 +152,7 @@
       }
     }),
 
-    TranslateableAttributes: Em.Mixin.create({
+    TranslateableAttributes: Ember.Mixin.create({
       didInsertElement: function() {
         var result = this._super.apply(this, arguments);
         eachTranslatedAttribute(this, function(attribute, translation) {
@@ -152,61 +167,91 @@
 
   isBinding = /(.+)Binding$/;
 
-  // CRUFT: in v2, which requires Ember 1.0+, Ember.uuid will always be
-  //        available, so this function can be cleaned up.
-  var uniqueElementId = (function(){
-    var id = Ember.uuid || 0;
-    return function() {
-      var elementId = 'i18n-' + id++;
-      return elementId;
-    };
-  })();
+  // Generate a universally unique id
+  var _uuid = 0;
+  function uniqueElementId() {
+    var i = ++_uuid;
+    return 'i18n-' + i;
+  }
 
-  Handlebars.registerHelper('t', function(key, options) {
-    var attrs, context, data, elementID, result, tagName, view;
-    context = this;
-    attrs = options.hash;
-    data = options.data;
-    view = data.view;
-    tagName = attrs.tagName || 'span';
-    delete attrs.tagName;
-    elementID = uniqueElementId();
+  var TranslationView = Ember._MetamorphView.extend({
 
-    Em.keys(attrs).forEach(function(property) {
-      var bindPath, currentValue, invoker, isBindingMatch, normalized, normalizedPath, observer, propertyName, root, _ref;
-      isBindingMatch = property.match(isBinding);
+    translationKey: null,
 
-      if (isBindingMatch) {
-        propertyName = isBindingMatch[1];
-        bindPath = attrs[property];
-        currentValue = get(context, bindPath, options);
-        attrs[propertyName] = currentValue;
-        invoker = null;
-        normalized = Ember.Handlebars.normalizePath(context, bindPath, data);
-        _ref = [normalized.root, normalized.path], root = _ref[0], normalizedPath = _ref[1];
+    wrappingTagName: Ember.computed(function(propertyName, newValue) {
+      if (arguments.length > 1 && newValue != null) { return newValue; }
 
-        observer = function() {
-          var elem, newValue;
-          if (view.get('state') !== 'inDOM') {
-            Em.removeObserver(root, normalizedPath, invoker);
-            return;
-          }
-          newValue = get(context, bindPath, options);
-          elem = view.$("#" + elementID);
-          attrs[propertyName] = newValue;
-          return elem.html(I18n.t(key, attrs));
-        };
+      var useSpanByDefault;
 
-        invoker = function() {
-          return runAfterRender(observer);
-        };
-
-        return Em.addObserver(root, normalizedPath, invoker);
+      if (Ember.FEATURES.hasOwnProperty('I18N_TRANSLATE_HELPER_SPAN')) {
+        useSpanByDefault = Ember.FEATURES.I18N_TRANSLATE_HELPER_SPAN;
+      } else {
+        Ember.deprecate('The {{t}} helper will no longer use a <span> tag in future versions of Ember.I18n. Set Ember.FEATURES.I18N_TRANSLATE_HELPER_SPAN to false to quiet these warnings and maintain older behavior.');
+        useSpanByDefault = true;
       }
+
+      return useSpanByDefault ? 'span' : null;
+    }),
+
+    render: function(buffer) {
+      var wrappingTagName = this.get('wrappingTagName');
+      var text = Ember.I18n.t(this.get('translationKey'), this.get('context'));
+
+      if (wrappingTagName) { buffer.push('<' + wrappingTagName + ' id="' + uniqueElementId() + '">'); }
+      buffer.push(text);
+      if (wrappingTagName) { buffer.push('</' + wrappingTagName + '>'); }
+    }
+
+  });
+
+  EmHandlebars.registerHelper('t', function(key, options) {
+    var context = this;
+    var data = options.data;
+    var attrs = options.hash;
+    var tagName = attrs.tagName;
+    delete attrs.tagName;
+
+    if (options.types[0] !== 'STRING') {
+      warn("Ember.I18n t helper called with unquoted key: %@. In the future, this will be treated as a bound property, not a string literal.".fmt(key));
+    }
+
+    var translationView = TranslationView.create({
+      context: attrs,
+      translationKey: key,
+      wrappingTagName: tagName
     });
 
-    result = '<%@ id="%@">%@</%@>'.fmt(tagName, elementID, I18n.t(key, attrs), tagName);
-    return new Handlebars.SafeString(result);
+    Ember.keys(attrs).forEach(function(property) {
+      var isBindingMatch = property.match(isBinding);
+      if (!isBindingMatch) { return; }
+
+      var propertyName = isBindingMatch[1];
+      var bindPath = attrs[property];
+      var currentValue = get(context, bindPath, options);
+
+      attrs[propertyName] = currentValue;
+
+      var invoker = null;
+      var normalized = EmHandlebars.normalizePath(context, bindPath, data);
+      var _ref = [normalized.root, normalized.path], root = _ref[0], normalizedPath = _ref[1];
+
+      var observer = function() {
+        if (translationView.$() == null) {
+          Ember.removeObserver(root, normalizedPath, invoker);
+          return;
+        }
+        attrs[propertyName] = get(context, bindPath, options);
+        translationView.rerender();
+      };
+
+      invoker = function() {
+        Ember.run.scheduleOnce('afterRender', observer);
+      };
+
+      return Ember.addObserver(root, normalizedPath, invoker);
+    });
+
+    data.view.appendChild(translationView);
   });
 
   var attrHelperFunction = function(options) {
@@ -214,16 +259,16 @@
     attrs = options.hash;
     result = [];
 
-    Em.keys(attrs).forEach(function(property) {
+    Ember.keys(attrs).forEach(function(property) {
       var translatedValue;
       translatedValue = I18n.t(attrs[property]);
       return result.push('%@="%@"'.fmt(property, translatedValue));
     });
 
-    return new Handlebars.SafeString(result.join(' '));
+    return new EmHandlebars.SafeString(result.join(' '));
   };
 
-  Handlebars.registerHelper('translateAttr', attrHelperFunction);
-  Handlebars.registerHelper('ta', attrHelperFunction);
+  EmHandlebars.registerHelper('translateAttr', attrHelperFunction);
+  EmHandlebars.registerHelper('ta', attrHelperFunction);
 
 }).call(undefined, this);
