@@ -1,9 +1,6 @@
-//= require cldr-1.0.0
-
 (function(window) {
   var I18n, assert, findTemplate, get, set, isBinding, lookupKey, pluralForm,
-      PlainHandlebars, EmHandlebars, keyExists,
-      compileTemplate, compileWithHandlebars;
+      PlainHandlebars, EmHandlebars, keyExists;
 
   PlainHandlebars = window.Handlebars;
   EmHandlebars = Ember.Handlebars;
@@ -38,7 +35,7 @@
 
     if (setOnMissing) {
       if (result == null) {
-        result = I18n.translations[key] = function() { return "Missing translation: " + key; };
+        result = I18n.translations[key] = function() { return I18n.missingMessage(key); };
         result._isMissing = true;
         I18n.trigger('missing', key);
       }
@@ -68,8 +65,30 @@
     }
   }
 
-  compileWithHandlebars = (function() {
-    if (Ember.ENV.I18N_COMPILE_WITHOUT_HANDLEBARS === undefined) {
+  var compileImplementation;
+
+  function compileTemplate(template) {
+    if (compileImplementation === undefined) {
+      compileImplementation = selectCompileImplementation();
+    }
+
+    return compileImplementation(template);
+  }
+
+  function selectCompileImplementation() {
+    var flag = Ember.ENV.I18N_COMPILE_WITHOUT_HANDLEBARS;
+
+    if (flag === true) {
+      return function compileWithoutHandlebars(template) {
+        return function (data) {
+          return template.replace(/\{\{(.*?)\}\}/g, function(i, match) {
+            return data[match];
+          });
+        };
+      };
+    }
+
+    if (flag === undefined) {
       warn("Ember.I18n will no longer include Handlebars compilation by default in the future; instead, it will supply its own default compiler. Set Ember.ENV.I18N_COMPILE_WITHOUT_HANDLEBARS to true to opt-in now.");
     }
 
@@ -82,20 +101,6 @@
         throw new Ember.Error('The default Ember.I18n.compile function requires the full Handlebars. Either include the full Handlebars or override Ember.I18n.compile.');
       };
     }
-  }());
-
-  function compileWithoutHandlebars(template) {
-    return function (data) {
-      return template.replace(/\{\{(.*?)\}\}/g, function(i, match) {
-        return data[match];
-      });
-    };
-  }
-
-  if (Ember.ENV.I18N_COMPILE_WITHOUT_HANDLEBARS === true) {
-    compileTemplate = compileWithoutHandlebars;
-  } else {
-    compileTemplate = compileWithHandlebars;
   }
 
   I18n = Ember.Evented.apply({
@@ -129,6 +134,10 @@
 
     exists: keyExists,
 
+    missingMessage: function(key) {
+      return "Missing translation: " + key; 
+    },
+
     TranslateableProperties: Ember.Mixin.create({
       init: function() {
         var result = this._super.apply(this, arguments);
@@ -158,8 +167,11 @@
 
   isBinding = /(.+)Binding$/;
 
+  // Generate a universally unique id
+  var _uuid = 0;
   function uniqueElementId() {
-    return ++Ember.uuid;
+    var i = ++_uuid;
+    return 'i18n-' + i;
   }
 
   var TranslationView = Ember._MetamorphView.extend({
